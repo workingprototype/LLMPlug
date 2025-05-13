@@ -18,6 +18,8 @@
     "google",
     "gemini",
     "huggingface",
+    "cohere",
+    "mistral",
     "nlp",
     "generative-ai",
     "streaming",
@@ -32,7 +34,9 @@
     "@anthropic-ai/sdk": "^0.20.1",
     "@google/generative-ai": "^0.10.0",
     "node-fetch": "^3.3.2",
-    "file-type": "^19.0.0"
+    "file-type": "^19.0.0",
+    "cohere-ai": "^7.9.5",
+    "@mistralai/mistralai": "^0.1.3"
   },
   "engines": {
     "node": ">=18.0.0"

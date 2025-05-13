@@ -2,6 +2,8 @@ import { OpenAIProvider } from './providers/openaiProvider.js';
 import { AnthropicProvider } from './providers/anthropicProvider.js';
 import { GoogleProvider } from './providers/googleProvider.js';
 import { HuggingFaceProvider } from './providers/huggingfaceProvider.js';
+import { CohereProvider } from './providers/cohereProvider.js';
+import { MistralProvider } from './providers/mistralProvider.js';
 import { LLMPlugError } from './utils/errors.js';
 
 const PROVIDERS = {
@@ -9,6 +11,8 @@ const PROVIDERS = {
   anthropic: AnthropicProvider,
   google: GoogleProvider,
   huggingface: HuggingFaceProvider,
+  cohere: CohereProvider,
+  mistralai: MistralProvider, 
   // TODO: Add more providers here as they are implemented
 };
 
@@ -34,5 +38,5 @@ export class LLMPlug {
 }
 
 // Export individual providers for direct use if desired, though getProvider is recommended
-export { OpenAIProvider, AnthropicProvider, GoogleProvider, HuggingFaceProvider };
+export { OpenAIProvider, AnthropicProvider, GoogleProvider, HuggingFaceProvider, CohereProvider, MistralProvider };
 export * from './utils/errors.js'; // Export error classes

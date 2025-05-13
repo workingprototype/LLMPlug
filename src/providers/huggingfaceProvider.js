@@ -1,4 +1,4 @@
-import fetch from 'node-fetch'; // Make sure 'node-fetch' is in package.json dependencies
+import fetch from 'node-fetch';
 import { BaseProvider } from './baseProvider.js';
 import { LLMPlugConfigurationError, LLMPlugRequestError } from '../utils/errors.js';
 
@@ -9,14 +9,11 @@ export class HuggingFaceProvider extends BaseProvider {
     super(config);
     this.providerName = "HuggingFace";
     try {
-      // API token is required for non-public models or to avoid rate limits
-      this.apiToken = this._getApiKey('HUGGINGFACE_API_TOKEN', 'apiToken'); // Allow passing token directly
+      this.apiToken = this._getApiKey('HUGGINGFACE_API_TOKEN', 'apiToken');
     } catch (error) {
-      // Token is optional for public models, so don't throw if not found, but warn.
       console.warn("HuggingFace API token not found. For private models or higher rate limits, please provide one.");
       this.apiToken = null;
     }
-    // User MUST provide a model_id for Hugging Face as there's no sensible default
     if (!config.modelId) {
       throw new LLMPlugConfigurationError("`modelId` is required in config for HuggingFaceProvider (e.g., 'gpt2', 'mistralai/Mistral-7B-Instruct-v0.1').", this.providerName);
     }
@@ -58,82 +55,132 @@ export class HuggingFaceProvider extends BaseProvider {
   }
 
   /**
-   * @param {string} prompt
-   * @param {import('./baseProvider.js').GenerationOptions} [options={}]
-   * @returns {Promise<string>}
+   * Converts a prompt string into the chat message array expected by chat API.
+   * @param {string | import('../baseProvider.js').ChatMessage[]} input
+   * @returns {import('../baseProvider.js').ChatMessage[]}
    */
-  async generate(prompt, options = {}) {
-    const modelId = options.model || this.modelId; // Allow overriding model per call
+  _prepareInputAsMessages(input) {
+    if (typeof input === 'string') {
+      return [{ role: 'user', content: input }];
+    }
+    if (Array.isArray(input)) {
+      // HuggingFace Inference API is generally text-only unless a specific model is used.
+      // For simplicity, we'll only extract text content.
+      return input.map(msg => ({
+        role: msg.role,
+        content: Array.isArray(msg.content) ? msg.content.map(part => part.type === 'text' ? part.text : '').join('') : msg.content,
+      }));
+    }
+    throw new LLMPlugRequestError("Invalid input type for generate. Must be string or ChatMessage[]", this.providerName);
+  }
+
+
+  /**
+   * @param {string | import('../baseProvider.js').ChatMessage[]} input
+   * @param {import('../baseProvider.js').GenerationOptions} [options={}]
+   * @returns {Promise<import('../baseProvider.js').GenerationResult>}
+   */
+  async generate(input, options = {}) {
+    // For Hugging Face, `generate` will typically map to the `text-generation` task.
+    // If input is messages, we'll convert it to a single prompt string.
+    let prompt;
+    if (Array.isArray(input)) {
+        // Simplistic concatenation for chat messages into a single prompt string
+        prompt = input.map(msg => `${msg.role}: ${typeof msg.content === 'string' ? msg.content : msg.content.map(p => p.text).join('\n')}`).join('\n') + '\nassistant:';
+    } else {
+        prompt = input;
+    }
+
+    const modelId = options.model || this.modelId;
     const payload = {
       inputs: prompt,
       parameters: {
-        max_new_tokens: options.maxTokens, // HF uses max_new_tokens
+        max_new_tokens: options.maxTokens,
         temperature: options.temperature,
-        return_full_text: false, // Typically you want only the generated part
+        return_full_text: false,
         stop_sequences: options.stopSequences,
         ...(options.extraParams || {}),
       },
-      options: { // For things like wait_for_model
-        wait_for_model: true, // Wait if model is loading
+      options: {
+        wait_for_model: true,
         use_cache: options.extraParams?.use_cache !== undefined ? options.extraParams.use_cache : true,
       }
     };
 
-    const apiResponse = await this._makeApiCall(payload, modelId, 'text-generation');
-    
-    // Response format can vary slightly. Common is an array with one object.
-    if (Array.isArray(apiResponse) && apiResponse.length > 0 && apiResponse[0].generated_text) {
-      return apiResponse[0].generated_text.trim();
-    } else if (apiResponse.generated_text) { // Some models might return object directly
-        return apiResponse.generated_text.trim();
+    try {
+      const apiResponse = await this._makeApiCall(payload, modelId, 'text-generation');
+      let textContent = '';
+      if (Array.isArray(apiResponse) && apiResponse.length > 0 && apiResponse[0].generated_text) {
+        textContent = apiResponse[0].generated_text.trim();
+      } else if (apiResponse && apiResponse.generated_text) {
+        textContent = apiResponse.generated_text.trim();
+      } else {
+        console.warn("HuggingFace generate: Unexpected response format", apiResponse);
+      }
+
+      // Hugging Face Inference API typically does not provide token usage directly for all models.
+      // Finish reason is also not standardized.
+      return {
+        text: textContent,
+        usage: null, // Not available in standard Inference API response
+        finishReason: null, // Not available in standard Inference API response
+        rawResponse: apiResponse,
+      };
+    } catch (error) {
+      throw new LLMPlugRequestError(`Hugging Face API generate request failed: ${error.message}`, this.providerName, error);
     }
-    // Handle other potential formats or log warning
-    console.warn("HuggingFace generate: Unexpected response format", apiResponse);
-    return '';
   }
 
   /**
-   * @param {import('./baseProvider.js').ChatMessage[]} messages
-   * @param {import('./baseProvider.js').GenerationOptions} [options={}]
-   * @returns {Promise<string>}
+   * @param {import('../baseProvider.js').ChatMessage[]} messages
+   * @param {import('../baseProvider.js').GenerationOptions} [options={}]
+   * @returns {Promise<import('../baseProvider.js').GenerationResult>}
    */
   async chat(messages, options = {}) {
     const modelId = options.model || this.modelId;
     const pastUserInputs = [];
     const generatedResponses = [];
-    let currentQuery = "";
+    let currentQuery = ""; // This will be the last user message
+    let systemPrompt = "";
 
     messages.forEach(msg => {
-      if (msg.role === 'user') {
-        if (currentQuery) { // If previous was also user (shouldn't happen in ideal alternating chat)
-          pastUserInputs.push(currentQuery); // Treat previous as done
-          generatedResponses.push(""); // Add an empty assistant response for it
+      const contentText = typeof msg.content === 'string' ? msg.content : msg.content.map(p => p.type === 'text' ? p.text : '').join('');
+
+      if (msg.role === 'system') {
+        systemPrompt += (systemPrompt ? "\n" : "") + contentText;
+      } else if (msg.role === 'user') {
+        // If the last message was user, merge it (simplistic, ideally new turn)
+        if (currentQuery) {
+          pastUserInputs.push(currentQuery);
+          generatedResponses.push(""); // No assistant response yet for this past user input
         }
-        currentQuery = msg.content;
+        currentQuery = contentText;
       } else if (msg.role === 'assistant') {
-        pastUserInputs.push(currentQuery); // The user input that led to this assistant response
-        generatedResponses.push(msg.content);
-        currentQuery = ""; // Reset current query
-      } else if (msg.role === 'system') {
-        // Prepend system prompt to the first user query if this model supports it this way
-        // Or some models might take it in `parameters`. For simplicity, prepend here.
-        currentQuery = msg.content + "\n" + (currentQuery || "");
+        // This implies a response to `currentQuery`. If currentQuery is empty, it's history.
+        if (currentQuery) { // This assistant message is a response to `currentQuery`
+            pastUserInputs.push(currentQuery);
+            generatedResponses.push(contentText);
+            currentQuery = ""; // Reset for next user message
+        } else { // This is part of historical conversation without a preceding user message in this chunk.
+            // If history already has an assistant, this implies malformed history.
+            // For simplicity, we'll just push it.
+            generatedResponses.push(contentText);
+            if (pastUserInputs.length < generatedResponses.length) {
+                pastUserInputs.push(""); // Add a placeholder user input if missing
+            }
+        }
       }
     });
-    
-    // The last user message is the one we're sending now.
-    // If messages end with assistant, it means we are just providing history.
-    // This basic HF client expects to generate a new response.
-    if (!currentQuery && pastUserInputs.length > 0) {
-        // If the last message was an assistant, we can't directly use conversational endpoint
-        // without a new user query. We could try to get the last user input and re-send.
-        // For simplicity, let's require the last message to be effectively 'user'.
-        // Or, use the last user input from history if available
-        if (messages[messages.length-1].role !== 'user' && messages.length > 0) {
-            const lastUserMsg = messages.slice().reverse().find(m => m.role === 'user');
-            if (lastUserMsg) currentQuery = lastUserMsg.content;
-            else throw new LLMPlugRequestError("HuggingFace chat: Last message must be from user, or provide a new user prompt.", this.providerName);
-        }
+
+    // Prepend system prompt to the final user query if any
+    if (systemPrompt) {
+        currentQuery = systemPrompt + "\n" + currentQuery;
+    }
+
+    if (!currentQuery) {
+        // If no new user query, maybe the intent was to just pass history.
+        // But for conversational API, a new query is usually expected.
+        throw new LLMPlugRequestError("HuggingFace chat: No current user message provided to generate a response for.", this.providerName);
     }
 
 
@@ -154,21 +201,48 @@ export class HuggingFaceProvider extends BaseProvider {
         use_cache: options.extraParams?.use_cache !== undefined ? options.extraParams.use_cache : true,
       }
     };
-    
-    const apiResponse = await this._makeApiCall(payload, modelId, 'conversational');
-    
-    if (apiResponse && apiResponse.generated_text) {
-      return apiResponse.generated_text.trim();
-    }
-    // The conversational task might also return `conversation` object with past inputs/outputs
-    if (apiResponse && apiResponse.conversation && apiResponse.conversation.generated_responses) {
+
+    try {
+      const apiResponse = await this._makeApiCall(payload, modelId, 'conversational');
+
+      let textContent = '';
+      if (apiResponse && apiResponse.generated_text) {
+        textContent = apiResponse.generated_text.trim();
+      } else if (apiResponse && apiResponse.conversation && apiResponse.conversation.generated_responses) {
         const newResponses = apiResponse.conversation.generated_responses;
         if (newResponses.length > generatedResponses.length) {
-            return newResponses[newResponses.length -1].trim();
+          textContent = newResponses[newResponses.length - 1].trim();
         }
-    }
+      } else {
+        console.warn("HuggingFace chat: Unexpected response format", apiResponse);
+      }
 
-    console.warn("HuggingFace chat: Unexpected response format", apiResponse);
-    return '';
+      return {
+        text: textContent,
+        usage: null,
+        finishReason: null,
+        rawResponse: apiResponse,
+      };
+    } catch (error) {
+      throw new LLMPlugRequestError(`Hugging Face API chat request failed: ${error.message}`, this.providerName, error);
+    }
+  }
+
+  /**
+   * @param {string | import('../baseProvider.js').ChatMessage[]} input
+   * @param {import('../baseProvider.js').GenerationOptions} [options={}]
+   * @returns {AsyncIterable<import('../baseProvider.js').GenerationStreamChunk>}
+   */
+  async *generateStream(input, options = {}) {
+    throw new LLMPlugError(`'generateStream' method not implemented for HuggingFaceProvider. Streaming is highly model-dependent for Inference API.`, this.providerName);
+  }
+
+  /**
+   * @param {import('../baseProvider.js').ChatMessage[]} messages
+   * @param {import('../baseProvider.js').GenerationOptions} [options={}]
+   * @returns {AsyncIterable<import('../baseProvider.js').GenerationStreamChunk>}
+   */
+  async *chatStream(messages, options = {}) {
+    throw new LLMPlugError(`'chatStream' method not implemented for HuggingFaceProvider. Streaming is highly model-dependent for Inference API.`, this.providerName);
   }
 }

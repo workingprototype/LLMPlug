@@ -1,12 +1,14 @@
 {
   "name": "llmplug",
   "version": "0.1.0",
-  "description": "A library to easily integrate various LLM models and vendors into applications.",
+  "description": "A library to easily integrate various LLM models and vendors into applications, with advanced features.",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "example": "node --env-file=.env examples/basicUsage.js"
+    "example": "node --env-file=.env examples/basicUsage.js",
+    "simple-example": "node --env-file=.env examples/simpleUsage.js",
+    "advanced-example": "node --env-file=.env examples/advancedUsage.js"
   },
   "keywords": [
     "llm",
@@ -17,15 +19,20 @@
     "gemini",
     "huggingface",
     "nlp",
-    "generative-ai"
+    "generative-ai",
+    "streaming",
+    "function-calling",
+    "tool-use",
+    "multimodal"
   ],
-  "author": "Adarsh C<adarsh@insanelyelegant.com>",
+  "author": "Adarsh C <adarsh@insanelyelegant.com>",
   "license": "MIT",
   "dependencies": {
     "openai": "^4.33.0",
     "@anthropic-ai/sdk": "^0.20.1",
     "@google/generative-ai": "^0.10.0",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "file-type": "^19.0.0"
   },
   "engines": {
     "node": ">=18.0.0"

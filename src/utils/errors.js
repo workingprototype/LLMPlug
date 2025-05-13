@@ -1,3 +1,4 @@
+
 export class LLMPlugError extends Error {
   constructor(message, provider, originalError = null) {
     super(message);
@@ -21,5 +22,13 @@ export class LLMPlugRequestError extends LLMPlugError {
   constructor(message, provider, originalError = null) {
     super(message, provider, originalError);
     this.name = 'LLMPlugRequestError';
+  }
+}
+
+export class LLMPlugToolError extends LLMPlugError {
+  constructor(message, provider, toolName, originalError = null) {
+    super(message, provider, originalError);
+    this.name = 'LLMPlugToolError';
+    this.toolName = toolName;
   }
 }
